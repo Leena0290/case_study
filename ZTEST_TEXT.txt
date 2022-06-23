@@ -1,0 +1,238 @@
+*&---------------------------------------------------------------------*
+*& Report ZTEST_TEXT
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT ztest_text.
+
+INCLUDE   ztest_text_top.
+INCLUDE   ztest_text_sel.
+INCLUDE   ztest_text_class.
+
+
+START-OF-SELECTION.
+  DATA lo_obj TYPE REF TO lcl_text_search.
+
+  CREATE OBJECT lo_obj.
+  lo_obj->read_data( ).
+
+
+*&---------------------------------------------------------------------*
+*& Include          ZTEST_TEXT_TOP
+*&---------------------------------------------------------------------*
+TABLES rlgrap.
+DATA: gt_tab   TYPE filetable,
+      gv_subrc TYPE i,
+      gv_file  TYPE rlgrap-filename.
+
+*&---------------------------------------------------------------------*
+*& Include          ZTEST_TEXT_SEL
+*&---------------------------------------------------------------------*
+
+DATA : lv_error_text TYPE string.
+SELECTION-SCREEN BEGIN OF BLOCK p1 WITH FRAME TITLE TEXT-001.
+SELECT-OPTIONS s_path FOR gv_file.
+SELECTION-SCREEN END OF BLOCK p1.
+
+SELECTION-SCREEN BEGIN OF BLOCK p2  WITH FRAME TITLE TEXT-002.
+PARAMETERS p_search TYPE string LOWER CASE.
+PARAMETERS: r1 RADIOBUTTON GROUP gr1,
+            r2 RADIOBUTTON GROUP gr1,
+            r3 RADIOBUTTON GROUP gr1.
+SELECTION-SCREEN END OF BLOCK p2.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR s_path-low.
+
+  CLEAR gt_tab.
+
+  CALL METHOD cl_gui_frontend_services=>file_open_dialog
+    EXPORTING
+      window_title            = 'Select Input File'
+      default_filename        = '*.txt'
+      multiselection          = 'X'
+    CHANGING
+      file_table              = gt_tab
+      rc                      = gv_subrc
+    EXCEPTIONS
+      file_open_dialog_failed = 1
+      cntl_error              = 2
+      error_no_gui            = 3
+      not_supported_by_gui    = 4.
+
+
+  IF sy-subrc <> 0.
+    IF sy-msgid IS NOT INITIAL.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+        WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4
+        INTO lv_error_text.
+    ELSE.
+      CASE sy-subrc.
+        WHEN 1.
+          lv_error_text = 'file_open_dialog_failed'.
+        WHEN 2.
+          lv_error_text = 'cntl_error'.
+        WHEN 3.
+          lv_error_text = ' error_no_gui'.
+        WHEN 4.
+          lv_error_text = 'supported_by_gui'.
+      ENDCASE.
+    ENDIF.
+    RETURN.
+  ENDIF.
+
+  IF gv_subrc <> 1.
+    lv_error_text = 'Too many files to load'.
+    RETURN.
+  ENDIF.
+
+
+
+
+
+*&---------------------------------------------------------------------*
+*& Include          ZTEST_TEXT_CLASS
+*&---------------------------------------------------------------------*
+
+CLASS lcl_text_search DEFINITION.
+  PUBLIC SECTION.
+
+    TYPES: BEGIN OF ty_final,
+             filename(1024) TYPE c,
+             count          TYPE i,
+             elapse         TYPE string,
+           END OF ty_final.
+
+    DATA: lt_lines     TYPE TABLE OF string,
+          lv_file_size TYPE i,
+          lv_count     TYPE i,
+          lt_t1        TYPE i, lt_t2 TYPE i,
+          lv_filename  TYPE string,
+          lt_final     TYPE STANDARD TABLE OF ty_final,
+          lt_result    TYPE match_result_tab.
+
+    METHODS: read_data,
+      string_match,   " Simple string mathing
+      string_regex,   " Regular expressions to find pattern
+      string_index.   " Using Index
+
+ENDCLASS.
+
+CLASS lcl_text_search IMPLEMENTATION.
+  METHOD read_data.
+    CLEAR :lv_filename,lv_file_size,lt_lines .
+* Get start the time
+    GET RUN TIME FIELD lt_t1.
+
+*    Process files
+    LOOP AT gt_tab ASSIGNING FIELD-SYMBOL(<fs_tab>).
+      IF <fs_tab> IS ASSIGNED.
+*   GEt file name
+        lv_filename = <fs_tab>-filename.
+      ENDIF.
+
+      CALL METHOD cl_gui_frontend_services=>gui_upload
+        EXPORTING
+          filename                = lv_filename
+*         filetype                = 'BIN'
+        IMPORTING
+          filelength              = lv_file_size
+        CHANGING
+          data_tab                = lt_lines
+        EXCEPTIONS
+          file_open_error         = 1
+          file_read_error         = 2
+          no_batch                = 3
+          gui_refuse_filetransfer = 4
+          invalid_type            = 5
+          no_authority            = 6
+          unknown_error           = 7
+          bad_data_format         = 8
+          header_not_allowed      = 9
+          separator_not_allowed   = 10
+          header_too_long         = 11
+          unknown_dp_error        = 12
+          access_denied           = 13
+          dp_out_of_memory        = 14
+          disk_full               = 15
+          dp_timeout              = 16
+          not_supported_by_gui    = 17
+          error_no_gui            = 18
+          OTHERS                  = 19.
+
+      IF sy-subrc = 0.
+        IF lt_lines IS NOT INITIAL.
+          CASE 'X'.
+            WHEN r1.
+              CALL METHOD string_match.
+            WHEN r2.
+              CALL METHOD string_regex.
+            WHEN r3.
+              CALL METHOD string_index.
+          ENDCASE.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+
+
+* Get the end time
+    GET RUN TIME FIELD lt_t2.
+    DATA(lv_elapse) = lt_t2 - lt_t1.
+    lt_final = VALUE #( BASE lt_final ( filename = 'Elapsed Time'  elapse = |{ lv_elapse } 'm/s' | ) ).
+    CLEAR :lv_elapse,lt_t2,lt_t1.
+
+    IF lt_final IS NOT INITIAL.  " display match count
+      SORT lt_final BY count DESCENDING.
+      cl_demo_output=>display( lt_final ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD string_match.
+    IF p_search IS NOT INITIAL.
+      TRY .
+          FIND ALL OCCURRENCES OF  p_search IN TABLE lt_lines  RESULTS lt_result RESPECTING CASE MATCH COUNT lv_count.
+          lt_final = VALUE #( BASE lt_final ( filename = lv_filename  count = lv_count ) ).
+        CATCH cx_sy_regex.
+          MESSAGE 'Invalid Regular Expression' TYPE 'S' DISPLAY LIKE 'E'.
+        CATCH cx_sy_regex_too_complex.
+          MESSAGE 'Regular Expression too Complex' TYPE 'S' DISPLAY LIKE 'E'.
+      ENDTRY.
+      CLEAR :lv_count.
+    ENDIF.
+  ENDMETHOD.
+  METHOD string_regex.
+    IF p_search IS NOT INITIAL.
+      TRY.
+          FIND ALL OCCURRENCES OF REGEX p_search IN TABLE lt_lines  RESULTS lt_result RESPECTING CASE MATCH COUNT lv_count.
+          lt_final = VALUE #( BASE lt_final ( filename = lv_filename  count = lv_count ) ).
+        CATCH cx_sy_regex.
+          MESSAGE 'Invalid Regular Expression' TYPE 'S' DISPLAY LIKE 'E'.
+
+        CATCH cx_sy_regex_too_complex.
+          MESSAGE 'Regular Expression too Complex' TYPE 'S' DISPLAY LIKE 'E'.
+      ENDTRY.
+      CLEAR :lv_count.
+    ENDIF.
+  ENDMETHOD.
+  METHOD string_index.
+
+
+*    data lv_final type i.
+*    FIELD-SYMBOLS: <lv_line> TYPE string.
+*    LOOP AT lt_lines ASSIGNING <lv_line>.
+*      IF <lv_line> IS ASSIGNED.
+*        FIND ALL OCCURRENCES OF  p_search IN <lv_line> MATCH COUNT DATA(lv_count).
+*        lv_final = lv_final + lv_count.
+*
+*        CLEAR :lt_t2,lt_t1,lv_count.
+*        FREE <lv_line>.
+*      ENDIF.
+*    ENDLOOP.
+**    * Get the end time
+*        GET RUN TIME FIELD lt_t2.
+*        DATA(lv_elapse) = lt_t2 - lt_t1.
+*        lt_final = VALUE #( BASE lt_final ( filename = lv_filename  count = lv_final elapse = |{ lv_elapse } 'm/s' | ) ).
+*        CLEAR :lv_elapse, lv_final.
+  ENDMETHOD.
+
+
+ENDCLASS.
